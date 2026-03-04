@@ -93,11 +93,36 @@ def _safe_cell(ws, row: int, col: int):
         return None
 
 
-def _extract_header_from_01(wb_path: str) -> Tuple[str, str, str, Optional[datetime], str, Optional[date], Optional[date], Optional[int]]:
+def _clean_hash_name(a1_value: str) -> str:
+    """
+    Databricks often appends a suffix like:
+      " - Advertiser_Name"
+      " - Advertiser Name"
+    Sometimes with underscores/spaces variations.
+    We remove that suffix and keep the FULL account string.
+    """
+    s = str(a1_value or "").strip()
+
+    # Remove any trailing suffix that contains "Advertiser" and "Name" (underscore/space tolerant)
+    # Examples removed:
+    #   " - Advertiser_Name"
+    #   " - Advertiser Name"
+    #   "-Advertiser_Name"
+    s = re.sub(r"\s*-\s*Advertiser[_\s]*Name\s*$", "", s, flags=re.I)
+
+    # Also handle the case where only " - Advertiser" is appended (rare)
+    s = re.sub(r"\s*-\s*Advertiser\s*$", "", s, flags=re.I)
+
+    return s.strip()
+
+
+def _extract_header_from_01(
+    wb_path: str
+) -> Tuple[str, str, str, Optional[datetime], str, Optional[date], Optional[date], Optional[int]]:
     """
     Reads SSOT header from 01_Advertiser_Name. This matches the Framework agent logic.
     Expected:
-      A1: "<HASH> - Advertiser_Name" (or similar)
+      A1: "<HASH> - ... - Advertiser_Name" (or similar)
       A2: "Tenant ID: ..."
       A3: "Account ID: ..."
       A4: "Date Range: YYYY-MM-DD to YYYY-MM-DD"
@@ -112,8 +137,9 @@ def _extract_header_from_01(wb_path: str) -> Tuple[str, str, str, Optional[datet
     if sheet is None:
         return ("", "", "", None, "", None, None, None)
 
+    # ✅ FIX: Keep FULL account name, only remove the trailing Advertiser suffix
     a1 = _safe_cell(sheet, 1, 1) or ""
-    hash_name = str(a1).split(" - ")[0].strip()
+    hash_name = _clean_hash_name(a1)
 
     tenant_id = ""
     account_id = ""
