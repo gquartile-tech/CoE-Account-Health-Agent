@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # ---------- Status (locked) ----------
 STATUS_OK = "OK"
@@ -15,13 +15,12 @@ STATUS_PARTIAL = "PARTIAL"
 class ControlResult:
     status: str
     what_we_saw: str = ""
+    why_it_matters: str = ""   # NEW
     data_source: str = ""
-    note: str = ""  # optional internal note; writer can ignore or place elsewhere
+    note: str = ""  # optional internal note
 
 
 # ---------- Databricks workbook sheet candidates ----------
-# Rules engine calls get_dataset(ctx, key) and uses these candidates.
-# Keep aligned with your Databricks export naming.
 TAB_CANDIDATES: Dict[str, List[str]] = {
     # SSOT header
     "HEADER": ["01_Advertiser_Name"],
