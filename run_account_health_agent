@@ -1,0 +1,58 @@
+# run_account_health_agent.py
+from __future__ import annotations
+
+import argparse
+import os
+
+from reader_databricks_health import load_databricks_context
+from rules_engine_health import evaluate_all
+from writer_account_health import write_account_health_output
+
+
+def main():
+    parser = argparse.ArgumentParser(description="CoE Account Health Agent")
+    parser.add_argument("--export", required=True, help="Path to Databricks export .xlsx")
+    parser.add_argument("--template", required=True, help="Path to CoE_Account_Health_Analysis_Templates.xlsm")
+    parser.add_argument("--out", required=True, help="Output path (.xlsm)")
+    parser.add_argument("--budget", required=False, type=float, help="User budget input for C006 (numeric)")
+    args = parser.parse_args()
+
+    export_path = args.export
+    template_path = args.template
+    out_path = args.out
+
+    if not os.path.exists(export_path):
+        raise FileNotFoundError(f"Export not found: {export_path}")
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Template not found: {template_path}")
+
+    ctx = load_databricks_context(export_path)
+
+    # user budget (required for C006)
+    if args.budget is not None:
+        ctx.user_budget = float(args.budget)
+    else:
+        # prompt
+        raw = input("Enter budget target for C006 (numeric): ").strip()
+        try:
+            ctx.user_budget = float(raw.replace(",", ""))
+        except Exception:
+            ctx.user_budget = None
+
+    results, ctx = evaluate_all(ctx)
+
+    write_account_health_output(
+        template_path=template_path,
+        output_path=out_path,
+        ctx=ctx,
+        results=results,
+    )
+
+    print("DONE")
+    print(f"Output: {out_path}")
+    print(f"Account: {ctx.hash_name}")
+    print(f"Window: {ctx.window_str} | Downloaded: {ctx.downloaded_dt}")
+
+
+if __name__ == "__main__":
+    main()
