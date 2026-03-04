@@ -163,12 +163,22 @@ def _extract_budget_from_text(text: str) -> Optional[float]:
 # -------------------------
 
 def _latest_full_month_anchor(ctx: DatabricksContext) -> Optional[pd.Timestamp]:
+    """
+    Always anchor to the LAST fully completed month.
+    Never use the current (potentially partial) month.
+
+    Example:
+      window_end = 2026-03-01 -> anchor = 2026-02-01
+      window_end = 2026-03-20 -> anchor = 2026-02-01
+    """
     if not ctx.window_end:
         return None
+
     we = pd.Timestamp(ctx.window_end)
-    if we.day == 1:
-        return (we - pd.offsets.MonthBegin(1))
-    return pd.Timestamp(year=we.year, month=we.month, day=1)
+    month_start = pd.Timestamp(year=we.year, month=we.month, day=1)
+
+    # Always take the prior month as the "latest full month"
+    return month_start - pd.offsets.MonthBegin(1)
 
 def _get_last_n_full_month_rows(df_monthly: pd.DataFrame, ctx: DatabricksContext, n: int, month_col_index: int = 0) -> Optional[pd.DataFrame]:
     if df_monthly is None or df_monthly.empty:
@@ -428,11 +438,28 @@ def eval_C007(ctx: DatabricksContext) -> cfg.ControlResult:
     df03 = get_dataset(ctx, "YEARLY_KPIS")
     src = "03_Yearly_KPIs_Current_vs_Last_!D19 (TACoS YoY delta)"
     why = f"{_primary_kpi_tag(ctx)} TACoS trend indicates whether total ad spend is consuming a larger share of total revenue over time."
-    d = _read_cell_by_pos(df03, "D", 19)
+        d = _read_cell_by_pos(df03, "D", 19)
     b = _read_cell_by_pos(df03, "B", 19)
     c = _read_cell_by_pos(df03, "C", 19)
-    if d is None or b is None or c is None:
-        return flag("Observed: TACoS YoY fields missing in 03_Yearly_KPIs_Current_vs_Last_ (B19/C19/D19).", why, src)
+
+    # NEW RULE: only evaluate when BOTH periods exist (B and C).
+    # If either is missing, mark OK (do not overflag).
+    if b is None or c is None:
+        return ok(
+            "Observed: TACoS trend not evaluated because one or both comparison periods are missing (B19/C19).",
+            why,
+            src
+        )
+
+    # If B and C exist but D is missing, compute delta safely.
+    if d is None:
+        if c == 0:
+            return ok(
+                "Observed: TACoS trend not evaluated because previous period is zero (C19=0).",
+                why,
+                src
+            )
+        d = (b - c) / c
 
     delta = d  # decimal
     what = f"Observed: TACoS changed {_pct_str(delta)} YoY ({_pct_str(c if c <= 1 else c/100)} → {_pct_str(b if b <= 1 else b/100)})."
@@ -443,14 +470,24 @@ def eval_C007(ctx: DatabricksContext) -> cfg.ControlResult:
         return partial(what, why, src)
     return flag(what, why, src)
 
-def _eval_abs_delta(ctx: DatabricksContext, row: int, label: str, ok_th: float, partial_th: float, src: str, fmt: str = "number") -> cfg.ControlResult:
-    df03 = get_dataset(ctx, "YEARLY_KPIS")
-    why = _why_trend_metric(label)
-    d = _read_cell_by_pos(df03, "D", row)
-    b = _read_cell_by_pos(df03, "B", row)
-    c = _read_cell_by_pos(df03, "C", row)
-    if d is None or b is None or c is None:
-        return flag(f"Observed: {label} YoY fields missing in 03_Yearly_KPIs_Current_vs_Last_ (B{row}/C{row}/D{row}).", why, src)
+    # NEW RULE: only evaluate when BOTH periods exist (B and C).
+    # If either is missing, mark OK (do not overflag).
+    if b is None or c is None:
+        return ok(
+            f"Observed: {label} trend not evaluated because one or both comparison periods are missing (B{row}/C{row}).",
+            why,
+            src
+        )
+
+    # If B and C exist but D is missing, compute delta safely.
+    if d is None:
+        if c == 0:
+            return ok(
+                f"Observed: {label} trend not evaluated because previous period is zero (C{row}=0).",
+                why,
+                src
+            )
+        d = (b - c) / c
 
     delta = d
     ad = abs(delta)
@@ -513,17 +550,15 @@ def eval_C013(ctx: DatabricksContext) -> cfg.ControlResult:
     return flag(what, why, src)
 
 def eval_C014(ctx: DatabricksContext) -> cfg.ControlResult:
-    return flag(
-        "Observed: NTB% source not available in current Databricks export; control cannot be evaluated.",
-        "NTB% indicates new-customer acquisition strength and top-funnel expansion capability.",
-        "AMC / NTB source (not present)",
+    return ok(
+        "Observed: NTB% dataset not available in the Databricks export; control currently not evaluated.",
+        "NTB% dataset pending integration (AMC source)"
     )
 
 def eval_C015(ctx: DatabricksContext) -> cfg.ControlResult:
-    return flag(
-        "Observed: Organic rank dataset not available in current Databricks export; control cannot be evaluated.",
-        "Organic rank stability indicates durable demand and reduced dependency on paid media.",
-        "Organic rank dataset (not present)",
+    return ok(
+        "Observed: Organic rank dataset not available in the Databricks export; control currently not evaluated.",
+        "Organic rank dataset pending integration"
     )
 
 def eval_C016(ctx: DatabricksContext) -> cfg.ControlResult:
@@ -578,6 +613,7 @@ def eval_C019(ctx: DatabricksContext) -> cfg.ControlResult:
     df46 = get_dataset(ctx, "STRIPE")
     src = "46_Stripe_Payments!C (PaymentDate)"
     why = "Delayed or missed payments increase client risk exposure and indicate potential retention or financial stress."
+
     if df46 is None or df46.empty:
         return flag("Observed: Stripe payments tab missing; cannot evaluate Financial Risk Indicator.", why, src)
 
@@ -587,15 +623,31 @@ def eval_C019(ctx: DatabricksContext) -> cfg.ControlResult:
         pay_dates = pd.Series([], dtype="datetime64[ns]")
 
     if pay_dates.empty:
-        return flag("Observed: No valid payment dates found in 46_Stripe_Payments column C; cannot evaluate payment punctuality.", why, src)
+        return flag(
+            "Observed: No valid payment dates found in 46_Stripe_Payments column C; cannot evaluate payment punctuality.",
+            why,
+            src,
+        )
 
     first_payment = pay_dates.min().date()
     billing_day = first_payment.day
 
-    anchor = pd.Timestamp(ctx.ref_date).to_period("M").to_timestamp() if ctx.ref_date else pay_dates.max().to_period("M").to_timestamp()
+    # Anchor month: use ref_date (downloaded date) if available, else last payment month
+    anchor = (
+        pd.Timestamp(ctx.ref_date).to_period("M").to_timestamp()
+        if ctx.ref_date
+        else pay_dates.max().to_period("M").to_timestamp()
+    )
+
+    # Evaluate the last 6 months (excluding anchor month itself)
     months = [(anchor - pd.offsets.MonthBegin(i)).to_period("M").to_timestamp() for i in range(1, 7)]
 
-    pay_date_set = set(d.date() for d in pay_dates.dt.date)
+    # Pre-group payment days by (year, month) for fast lookup
+    pay_df = pd.DataFrame({"dt": pay_dates})
+    pay_df["y"] = pay_df["dt"].dt.year
+    pay_df["m"] = pay_df["dt"].dt.month
+    pay_df["d"] = pay_df["dt"].dt.day
+    days_by_month = pay_df.groupby(["y", "m"])["d"].apply(set).to_dict()
 
     missing_last3 = []
     missing_3to6 = []
@@ -604,15 +656,30 @@ def eval_C019(ctx: DatabricksContext) -> cfg.ControlResult:
         return pd.Period(f"{y}-{m:02d}", freq="M").days_in_month
 
     for idx, m in enumerate(months, start=1):
+        # Clamp billing day to month length (e.g., Feb)
         day = min(billing_day, _dim(m.year, m.month))
-        expected = date(m.year, m.month, day)
-        if expected not in pay_date_set:
-            if idx <= 3:
-                missing_last3.append(expected.strftime("%Y-%m-%d"))
-            else:
-                missing_3to6.append(expected.strftime("%Y-%m-%d"))
 
-    what = f"Observed: Billing day is day {billing_day} (first payment: {first_payment}). Missing on-time payments detected in: {missing_last3} (last 3 months), {missing_3to6} (months 3–6)."
+        # Allow window: billing_day ± 3 days (clamped to valid days 1..days_in_month)
+        lower = max(1, day - 3)
+        upper = min(_dim(m.year, m.month), day + 3)
+
+        paid_days = days_by_month.get((m.year, m.month), set())
+
+        # Must have at least one payment within the allowed window
+        on_time = any(lower <= d <= upper for d in paid_days)
+
+        if not on_time:
+            expected_window = f"{m.year}-{m.month:02d}-{lower:02d} to {m.year}-{m.month:02d}-{upper:02d}"
+            if idx <= 3:
+                missing_last3.append(expected_window)
+            else:
+                missing_3to6.append(expected_window)
+
+    what = (
+        f"Observed: Billing day is day {billing_day} (first payment: {first_payment}). "
+        f"Expected payment window is billing_day ± 3 days. "
+        f"Missing payments detected in: {missing_last3} (last 3 months), {missing_3to6} (months 3–6)."
+    )
 
     if missing_last3:
         return flag(what, why, src)
@@ -621,10 +688,9 @@ def eval_C019(ctx: DatabricksContext) -> cfg.ControlResult:
     return ok(what, why, src)
 
 def eval_C020(ctx: DatabricksContext) -> cfg.ControlResult:
-    return flag(
-        "Observed: Churn Zero Score source not available in current Databricks export; control cannot be evaluated.",
-        "Churn risk score enables early retention intervention and escalation when risk increases.",
-        "Churn Zero (not present)",
+    return ok(
+        "Observed: Churn risk dataset not available in the Databricks export; control currently not evaluated.",
+        "Churn Zero Score dataset pending integration"
     )
 
 # ---- Benchmarks ----
