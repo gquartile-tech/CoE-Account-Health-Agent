@@ -1,21 +1,11 @@
 # writer_account_health.py
 from __future__ import annotations
 
-from typing import Dict, Tuple, Optional
+from typing import Dict
 from openpyxl import load_workbook
 
 import config_health as cfg
 from reader_databricks_health import DatabricksContext
-
-
-def _find_col_index_by_header(ws, header_text: str) -> Optional[int]:
-    header_text = header_text.strip().lower()
-    # scan row 1
-    for c in range(1, ws.max_column + 1):
-        v = ws.cell(row=1, column=c).value
-        if v and str(v).strip().lower() == header_text:
-            return c
-    return None
 
 
 def write_account_health_output(
@@ -29,13 +19,8 @@ def write_account_health_output(
     ws_main = wb["Account Health_Analysis"]
     ws_ref = wb["Account Health_Reference"]
 
-    # ---- Header block (same idea as Framework writer) ----
-    # Keep template formatting; just overwrite key cells.
-
-    # A1: "<HASH> — Account Health Analysis"
+    # ---- Header/meta (mirrors Framework writer approach) ----
     ws_main["A1"].value = f"{ctx.hash_name} — Account Health Analysis"
-
-    # B3/B4/B5 (already used by your template)
     ws_main["B3"].value = f"Account: {ctx.hash_name} | Tenant ID: {ctx.tenant_id} | Account ID: {ctx.account_id}"
     if ctx.window_start and ctx.window_end and ctx.window_days is not None:
         ws_main["B4"].value = f"{ctx.window_start} to {ctx.window_end} ({ctx.window_days} days)"
@@ -44,42 +29,32 @@ def write_account_health_output(
 
     ws_main["B5"].value = ctx.downloaded_dt.strftime("%Y-%m-%d %H:%M:%S") if ctx.downloaded_dt else ""
 
-    # ---- New header fields you requested ----
-    # ACoS constraint B9, TACoS constraint B10, Budget target (from CS AM7 extraction) B11, Primary KPI E10
-    if ctx.acos_constraint is not None:
-        ws_main["B9"].value = f"{ctx.acos_constraint*100:.1f}%"
-    else:
-        ws_main["B9"].value = "NOT FOUND"
-
-    if ctx.tacos_constraint is not None:
-        ws_main["B10"].value = f"{ctx.tacos_constraint*100:.1f}%"
-    else:
-        ws_main["B10"].value = "NOT FOUND"
-
-    if ctx.budget_target_from_cs is not None:
-        ws_main["B11"].value = float(ctx.budget_target_from_cs)
-    else:
-        ws_main["B11"].value = "NOT DEFINED"
-
+    # ---- Constraints summary block (your requested cells) ----
+    ws_main["B9"].value = f"{ctx.acos_constraint*100:.1f}%" if ctx.acos_constraint is not None else "NOT FOUND"
+    ws_main["B10"].value = f"{ctx.tacos_constraint*100:.1f}%" if ctx.tacos_constraint is not None else "NOT FOUND"
+    ws_main["B11"].value = float(ctx.budget_target_from_cs) if ctx.budget_target_from_cs is not None else "NOT DEFINED"
     ws_main["E10"].value = ctx.primary_kpi or "ACOS"
 
     # ---- Write control results to Account Health_Reference ----
-    # Columns are fixed in your template:
-    # Col B = Control ID, Col D = STATUS, Col H = What We Saw, Col J = Data Source
-    control_id_col = 2
-    status_col = 4
-    what_we_saw_col = 8
-    data_source_col = 10
+    # Template mapping (adjust if your template differs)
+    control_id_col = 2   # B
+    status_col = 4       # D
+    what_col = 8         # H
+    why_col = 9          # I  <-- NEW
+    src_col = 10         # J
 
     for r in range(2, ws_ref.max_row + 1):
         cid = ws_ref.cell(row=r, column=control_id_col).value
         if not cid:
             continue
         cid = str(cid).strip().upper()
-        if cid in results:
-            res = results[cid]
-            ws_ref.cell(row=r, column=status_col).value = res.status
-            ws_ref.cell(row=r, column=what_we_saw_col).value = res.what_we_saw
-            ws_ref.cell(row=r, column=data_source_col).value = res.data_source
+        res = results.get(cid)
+        if not res:
+            continue
+
+        ws_ref.cell(row=r, column=status_col).value = res.status
+        ws_ref.cell(row=r, column=what_col).value = res.what_we_saw
+        ws_ref.cell(row=r, column=why_col).value = res.why_it_matters
+        ws_ref.cell(row=r, column=src_col).value = res.data_source
 
     wb.save(output_path)
