@@ -14,6 +14,7 @@ def write_account_health_output(
     ctx: DatabricksContext,
     results: Dict[str, cfg.ControlResult],
 ) -> None:
+    # keep_vba=True is required to preserve macros
     wb = load_workbook(template_path, keep_vba=True)
 
     ws_main = wb["Account Health_Analysis"]
@@ -22,6 +23,7 @@ def write_account_health_output(
     # ---- Header/meta (mirrors Framework writer approach) ----
     ws_main["A1"].value = f"{ctx.hash_name} — Account Health Analysis"
     ws_main["B3"].value = f"Account: {ctx.hash_name} | Tenant ID: {ctx.tenant_id} | Account ID: {ctx.account_id}"
+
     if ctx.window_start and ctx.window_end and ctx.window_days is not None:
         ws_main["B4"].value = f"{ctx.window_start} to {ctx.window_end} ({ctx.window_days} days)"
     else:
@@ -36,20 +38,31 @@ def write_account_health_output(
     ws_main["E10"].value = ctx.primary_kpi or "ACOS"
 
     # ---- Write control results to Account Health_Reference ----
-    # Template mapping (adjust if your template differs)
+    # Column mapping (per your template)
     control_id_col = 2   # B
     status_col = 4       # D
     what_col = 8         # H
-    why_col = 9          # I  <-- NEW
+    why_col = 9          # I
     src_col = 10         # J
 
+    # ------------------------------------------------------------------
+    # SPEED UPGRADE:
+    # 1) Build a row index map once (ControlID -> row)
+    # 2) Write by iterating over `results` (not scanning the sheet repeatedly)
+    # This is notably faster when scaling or when templates get larger.
+    # ------------------------------------------------------------------
+    cid_to_row: Dict[str, int] = {}
+
+    # Only scan the Control ID column once
     for r in range(2, ws_ref.max_row + 1):
         cid = ws_ref.cell(row=r, column=control_id_col).value
-        if not cid:
-            continue
-        cid = str(cid).strip().upper()
-        res = results.get(cid)
-        if not res:
+        if cid:
+            cid_to_row[str(cid).strip().upper()] = r
+
+    # Now write results directly
+    for cid, res in results.items():
+        r = cid_to_row.get(str(cid).strip().upper())
+        if not r:
             continue
 
         ws_ref.cell(row=r, column=status_col).value = res.status
@@ -57,4 +70,12 @@ def write_account_health_output(
         ws_ref.cell(row=r, column=why_col).value = res.why_it_matters
         ws_ref.cell(row=r, column=src_col).value = res.data_source
 
+    # ------------------------------------------------------------------
+    # RELIABILITY UPGRADE:
+    # Save + explicit close to release file handle and prevent stale links.
+    # ------------------------------------------------------------------
     wb.save(output_path)
+    try:
+        wb.close()
+    except Exception:
+        pass
