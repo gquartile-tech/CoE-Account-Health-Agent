@@ -405,7 +405,7 @@ def eval_C005(ctx: DatabricksContext) -> cfg.ControlResult:
 
 def eval_C006(ctx: DatabricksContext) -> cfg.ControlResult:
     df02 = get_dataset(ctx, "KPI_RANGE")
-    src = "02_Date_Range_KPIs__Date_Range_!G7 vs User Budget + CS AM7 budget presence"
+    src = "02_Date_Range_KPIs__Date_Range_!G7 vs 38_Client_Success_Insights_Repo!AM7 (budget target)"
     why = f"{_primary_kpi_tag(ctx)} Budget pacing indicates whether investment levels match the planned growth/profitability strategy."
     if df02 is None or df02.empty:
         return flag("Observed: Date range KPI tab missing; cannot evaluate budget pacing.", why, src)
@@ -414,18 +414,17 @@ def eval_C006(ctx: DatabricksContext) -> cfg.ControlResult:
     if spend is None:
         return flag("Observed: Spend value missing in 02_Date_Range_KPIs__Date_Range_ (G7).", why, src)
 
-    if ctx.user_budget is None:
-        return flag("Observed: Budget input is required to evaluate C006 (user_budget not provided).", why, src)
-
+    # ✅ No user input — budget target must come from CS AM7 parsing
     if ctx.budget_target_from_cs is None:
         return flag("Observed: Budget target not documented in Client Success context (AM7).", why, src)
 
-    budget = float(ctx.user_budget)
+    budget = float(ctx.budget_target_from_cs)
     if budget == 0:
-        return flag("Observed: Provided budget is zero/invalid; cannot evaluate pacing.", why, src)
+        return flag("Observed: Budget target is zero/invalid; cannot evaluate pacing.", why, src)
 
     dev = (spend - budget) / budget
     abs_dev = abs(dev)
+
     what = f"Observed: Spend = {_money_str(spend)} vs budget target = {_money_str(budget)} (Δ {_pct_str(dev)})."
 
     if abs_dev <= 0.10:
