@@ -31,6 +31,14 @@ def main():
     # Run evaluation engine
     results, ctx = evaluate_all(ctx)
 
+not_eval = sorted([
+    cid for cid, res in results.items()
+    if isinstance(res.what_we_saw, str) and "not evaluated" in res.what_we_saw.lower()
+])
+
+if not_eval:
+    print(f"NOT_EVALUATED_CONTROLS: {', '.join(not_eval)}")
+
     # ------------------------------------------------------------------
     # Unique filename generation (prevents cached / stale download links)
     # ------------------------------------------------------------------
